@@ -1,0 +1,7 @@
+librosa
+numpy
+sounddevice
+python-osc
+scikit-learn
+mediapipe
+opencv-python
