@@ -89,6 +89,8 @@ help                             show this message
 quit                             shut down
 ```
 
+
+
 Typical session: sing and dance a first state, run `record 0 0 3`; sing and dance a different combined state, run `record 1 1 3`; repeat with a few more states and target values; then `train`; then `run` to stream live predictions to whatever consumes them (default `127.0.0.1:12000/stagedouble/outputs`).
 
 `status` will tell you if either input stream hasn't sent any data yet (e.g. if you forgot to start `audio_extractor.py` or `motion_extractor.py`) — `record` needs both streams active to capture meaningful 115-dim examples.
