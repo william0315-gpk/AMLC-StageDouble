@@ -22,9 +22,10 @@ Java Swing 界面在 macOS Sonoma 上会因为 Carbon 菜单不兼容而崩溃�
     python ml_trainer.py
     python ml_trainer.py --in-port 6448 --out-port 12000
 
-    record <out1> <out2> [seconds]   capture live features for `seconds`
-                                      (default 3), each labeled with the
-                                      target output (out1, out2)
+    record <out1>..<out6> [seconds]   hold a state and capture it for `seconds`
+                                      (default 3), labeled with the target
+                                      outputs (mouth, expression, head,
+                                      body, arm, speed)
     train                            fit the regressor on all recorded
                                       examples so far
     run                               start continuously predicting outputs
@@ -39,9 +40,10 @@ Java Swing 界面在 macOS Sonoma 上会因为 Carbon 菜单不兼容而崩溃�
     python ml_trainer.py
     python ml_trainer.py --in-port 6448 --out-port 12000
 
-    record <out1> <out2> [秒数]       保持某个状态，采集 `秒数`（默认 3）秒
+    record <out1>..<out6> [秒数]       保持某个状态，采集 `秒数`（默认 3）秒
                                       的实时特征，并把它们都标记为目标
-                                      输出 (out1, out2)
+                                      输出（嘴巴、表情、头部、身体、
+                                      手臂、速度）
     train                            用目前已录制的所有样本训练回归模型
     run                               开始实时预测：不断读取输入特征、
                                       预测输出，并通过 OSC 发送出去
@@ -76,7 +78,9 @@ import numpy as np
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.multioutput import MultiOutputRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -89,7 +93,7 @@ from sklearn.preprocessing import StandardScaler
 # 警告，避免吓到用户。
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
-N_OUTPUTS = 2  # 输出参数的个数：本项目固定输出 2 个数值（例如驱动数字人的两个控制维度）。
+N_OUTPUTS = 6  # 输出参数的个数：嘴巴开合、表情强度、头部角度、身体动作幅度、手臂高度、动作速度。
 SAMPLE_INTERVAL = 0.1  # seconds; matches audio_extractor.py's ~10Hz hop rate
 # 采样间隔（秒）：0.1 秒，与 audio_extractor.py 大约 10Hz 的发送频率保持一致，
 # 这样每次 audio_extractor.py 发来新特征时，我们基本都能及时读到最新值。
@@ -121,35 +125,33 @@ class FeatureReceiver:
             return list(self._latest) if self._latest is not None else None
 
 
-def build_model():
-    """[EN] Build a fresh, untrained scaler + neural network regression
-    pipeline.
-    [中] 构建一个全新的、尚未训练的"标准化 + 神经网络回归"流水线（pipeline）。
+def build_model(model_type="random_forest"):
+    """[EN] Build a fresh, untrained regression model.
+    [中] 构建一个全新的、尚未训练的回归模型。
+
+    Three model types are supported (select via --model CLI argument):
+    - random_forest: 100-tree forest, stable on small IML datasets (default)
+    - gradient_boost: 100-stage boosting, wrapped in MultiOutputRegressor
+    - mlp: deeper neural network (64→32 hidden units, StandardScaler + lbfgs)
+
+    支持三种模型类型（通过 --model 命令行参数选择）：
+    - random_forest: 100 棵树的随机森林，小数据集上最稳定（默认）
+    - gradient_boost: 100 轮梯度提升，用 MultiOutputRegressor 包装
+    - mlp: 更深的神经网络（64→32 隐藏层，StandardScaler + lbfgs 求解器）
     """
-    # One small hidden layer is enough to fit the handful of examples a
-    # live demonstration session produces; StandardScaler matters a lot
-    # here since pitch (~Hz), volume (~0-1), and MFCCs (~-400 to 400) are
-    # on wildly different scales. lbfgs converges reliably on small,
-    # non-streaming datasets like these, unlike the default 'adam' solver.
-    #
-    # 关键决策说明：
-    # 1）为什么用神经网络（MLP）：这是一个通用、易用的非线性回归器，
-    #    能够学习"特征组合 -> 输出参数"之间复杂的映射关系，而且 scikit-learn
-    #    里开箱即用，不需要自己实现反向传播。
-    # 2）为什么隐藏层只有 10 个神经元（一层）：现场示范采集到的训练样本
-    #    通常只有几十到上百条，模型太大容易过拟合，一个小隐藏层就足够
-    #    拟合这种小数据集。
-    # 3）为什么要先做 StandardScaler（标准化）：16 个特征的数值范围差异
-    #    极大——音高大约是几十到几千 Hz，音量大约在 0~1 之间，MFCC 大约
-    #    在 -400~400 之间。如果不做标准化，数值范围大的特征会主导训练
-    #    过程，掩盖其他特征的影响。
-    # 4）为什么用 'lbfgs' 而不是默认的 'adam'：lbfgs 是一种拟牛顿法，
-    #    在小规模、一次性（非流式）数据集上收敛更稳定可靠；'adam' 这类
-    #    随机梯度方法通常需要更多数据和更多轮次才能收敛好。
-    return make_pipeline(
-        StandardScaler(),
-        MLPRegressor(hidden_layer_sizes=(10,), solver="lbfgs", max_iter=2000),
-    )
+    if model_type == "random_forest":
+        return RandomForestRegressor(n_estimators=100, random_state=42)
+    elif model_type == "gradient_boost":
+        return MultiOutputRegressor(
+            GradientBoostingRegressor(n_estimators=100, random_state=42)
+        )
+    elif model_type == "mlp":
+        return make_pipeline(
+            StandardScaler(),
+            MLPRegressor(hidden_layer_sizes=(64, 32), solver="lbfgs", max_iter=2000),
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type!r}. Choose random_forest, gradient_boost, or mlp.")
 
 
 class Trainer:
@@ -159,10 +161,11 @@ class Trainer:
     输入特征转换成预测输出并通过 OSC 发送出去。
     """
 
-    def __init__(self, osc_out_client, osc_out_address):
-        self.examples_X = []  # 训练样本的输入部分：每个元素是一个 16 维特征向量。
-        self.examples_y = []  # 训练样本的输出部分：每个元素是一个 [out1, out2] 目标值。
-        self.model = build_model()  # 当前的（尚未训练的）模型。
+    def __init__(self, osc_out_client, osc_out_address, model_type="random_forest"):
+        self.examples_X = []  # 训练样本的输入部分：每个元素是一个特征向量。
+        self.examples_y = []  # 训练样本的输出部分：每个元素是一个包含 6 个目标值的列表。
+        self.model_type = model_type  # 当前使用的模型类型。
+        self.model = build_model(model_type)  # 当前的（尚未训练的）模型。
         self.trained = False  # 模型是否已经训练过。
         self.osc_out_client = osc_out_client  # 用来发送预测结果的 OSC 客户端。
         self.osc_out_address = osc_out_address  # 发送预测结果时使用的 OSC 地址。
@@ -181,7 +184,7 @@ class Trainer:
         if len(self.examples_X) < 2:
             print("Need at least 2 training examples before training (see 'record').")
             return
-        self.model = build_model()  # 每次训练都从头构建一个全新模型，避免受上一次训练结果影响。
+        self.model = build_model(self.model_type)  # 每次训练都从头构建一个全新模型，避免受上一次训练结果影响。
         self.model.fit(np.array(self.examples_X), np.array(self.examples_y))
         self.trained = True
         print(f"Trained on {len(self.examples_X)} examples.")
@@ -214,7 +217,8 @@ class Trainer:
             if features is not None:
                 out = self.predict(features)
                 self.osc_out_client.send_message(self.osc_out_address, out.tolist())
-                print(f"\routput: {out[0]:8.3f}, {out[1]:8.3f}   ", end="", flush=True)
+                vals = " ".join(f"{v:7.3f}" for v in out)
+                print(f"\routput: {vals}   ", end="", flush=True)
             time.sleep(SAMPLE_INTERVAL)
         print()  # move off the \r-overwritten line before the next prompt
         # 换行，避免下一次打印的命令提示符和上面用 \r 覆盖打印的那一行粘在一起。
@@ -254,9 +258,9 @@ def record_examples(receiver, target, seconds):
 
 HELP_TEXT = """\
 Commands:
-  record <out1> <out2> [seconds]   hold a state and capture it for `seconds`
-                                    (default 3), labeled with target output
-                                    (out1, out2)
+  record <out1>..<out6> [seconds]  hold a state and capture it for `seconds`
+                                    (default 3), labeled with target outputs
+                                    (mouth, expression, head, body, arm, speed)
   train                            fit the regressor on examples recorded so far
   run                              start live prediction + OSC output
   stop                             stop live prediction
@@ -282,6 +286,12 @@ def parse_args():
     parser.add_argument("--out-ip", default="127.0.0.1", help="where to send predicted outputs")
     parser.add_argument("--out-port", type=int, default=12000, help="OSC port for predicted outputs")
     parser.add_argument("--out-address", default="/stagedouble/outputs", help="OSC address for predicted outputs")
+    parser.add_argument(
+        "--model",
+        default="random_forest",
+        choices=["random_forest", "gradient_boost", "mlp"],
+        help="regression model type (default: random_forest)",
+    )
     return parser.parse_args()
 
 
@@ -305,8 +315,9 @@ def main():
 
     osc_out_client = SimpleUDPClient(args.out_ip, args.out_port)
     print(f"Sending outputs to {args.out_ip}:{args.out_port}{args.out_address}")
+    print(f"Model: {args.model}")
 
-    trainer = Trainer(osc_out_client, args.out_address)
+    trainer = Trainer(osc_out_client, args.out_address, args.model)
     print_help()
 
     # 主命令循环：不断读取用户在终端输入的一行命令并执行对应操作。
@@ -330,7 +341,7 @@ def main():
         elif cmd == "record":
             # record <out1> <out2> [seconds] —— 录制训练样本。
             if len(rest) < N_OUTPUTS:
-                print("Usage: record <out1> <out2> [seconds]")
+                print("Usage: record <mouth> <expression> <head> <body> <arm> <speed> [seconds]")
                 continue
             try:
                 target = [float(rest[i]) for i in range(N_OUTPUTS)]

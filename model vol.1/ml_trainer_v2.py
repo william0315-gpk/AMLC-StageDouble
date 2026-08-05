@@ -14,7 +14,9 @@ and merges them into a single 115-value input vector (16 + 99 = 115) before
 every record / train / run step. Everything else works exactly the same as
 ml_trainer.py: the same "interactive machine learning" (IML) workflow of
 demonstrating labeled examples, training a small neural network regressor,
-and running it live — same terminal commands, same 2-value OSC output.
+and running it live — same terminal commands, same OSC output (now 6 values:
+mouth openness, expression intensity, head angle, body movement amplitude,
+arm height, movement speed).
 
 [中] 这个文件做什么：
 这是 prototype vol.1 里 ml_trainer.py 的 vol.2 升级版本。原来的版本只
@@ -33,9 +35,10 @@ and running it live — same terminal commands, same 2-value OSC output.
     python ml_trainer_v2.py
     python ml_trainer_v2.py --audio-port 6448 --motion-port 6449 --out-port 12000
 
-    record <out1> <out2> [seconds]   capture live merged features for
+    record <out1> <out2> <out3> <out4> <out5> <out6> [seconds]   capture live merged features for
                                       `seconds` (default 3), each labeled
-                                      with the target output (out1, out2)
+                                      with the target outputs (mouth,
+                                      expression, head, body, arm, speed)
     train                            fit the regressor on all recorded
                                       examples so far
     run                               start continuously predicting outputs
@@ -50,9 +53,10 @@ and running it live — same terminal commands, same 2-value OSC output.
     python ml_trainer_v2.py
     python ml_trainer_v2.py --audio-port 6448 --motion-port 6449 --out-port 12000
 
-    record <out1> <out2> [秒数]       保持某个状态，采集 `秒数`（默认 3）秒
+    record <out1> <out2> <out3> <out4> <out5> <out6> [秒数]       保持某个状态，采集 `秒数`（默认 3）秒
                                       的实时合并特征，并把它们都标记为
-                                      目标输出 (out1, out2)
+                                      目标输出（嘴巴、表情、头部、身体、
+                                      手臂、速度）
     train                            用目前已录制的所有样本训练回归模型
     run                              开始实时预测：不断读取输入特征、
                                       预测输出，并通过 OSC 发送出去
@@ -94,7 +98,9 @@ import numpy as np
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.multioutput import MultiOutputRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -107,7 +113,7 @@ from sklearn.preprocessing import StandardScaler
 # 警告，避免吓到用户。
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
-N_OUTPUTS = 2  # 输出参数的个数：本项目固定输出 2 个数值（例如驱动数字人的两个控制维度）。
+N_OUTPUTS = 6  # 输出参数的个数：嘴巴开合、表情强度、头部角度、身体动作幅度、手臂高度、动作速度。
 
 N_AUDIO_FEATURES = 16  # audio_extractor.py 发送的特征维度：pitch, volume, 13 x MFCC, tempo。
 N_MOTION_FEATURES = 99  # motion_extractor.py 发送的特征维度：33 个关键点 x (x, y, z)。
@@ -179,26 +185,33 @@ class MergedFeatureReceiver:
         }
 
 
-def build_model():
-    """[EN] Build a fresh, untrained scaler + neural network regression
-    pipeline.
-    [中] 构建一个全新的、尚未训练的"标准化 + 神经网络回归"流水线（pipeline）。
+def build_model(model_type="random_forest"):
+    """[EN] Build a fresh, untrained regression model.
+    [中] 构建一个全新的、尚未训练的回归模型。
+
+    Three model types are supported (select via --model CLI argument):
+    - random_forest: 100-tree forest, stable on small IML datasets (default)
+    - gradient_boost: 100-stage boosting, wrapped in MultiOutputRegressor
+    - mlp: deeper neural network (64→32 hidden units, StandardScaler + lbfgs)
+
+    支持三种模型类型（通过 --model 命令行参数选择）：
+    - random_forest: 100 棵树的随机森林，小数据集上最稳定（默认）
+    - gradient_boost: 100 轮梯度提升，用 MultiOutputRegressor 包装
+    - mlp: 更深的神经网络（64→32 隐藏层，StandardScaler + lbfgs 求解器）
     """
-    # Same architecture choice as prototype vol.1's ml_trainer.py, just with
-    # a wider input layer (115 instead of 16) since StandardScaler and the
-    # MLP's input layer both size themselves automatically from the data.
-    # See ml_trainer.py's build_model() docstring for the full reasoning on
-    # hidden layer size / lbfgs solver / StandardScaler.
-    #
-    # 和 prototype vol.1 里 ml_trainer.py 的架构选择完全一致，唯一区别是
-    # 输入层变宽了（115 维而不是 16 维）——StandardScaler 和 MLP 的输入层
-    # 都会根据训练数据自动确定自己的维度，不需要手动指定。关于隐藏层大小 /
-    # lbfgs 求解器 / StandardScaler 的完整原因说明，见 ml_trainer.py 里
-    # build_model() 的文档字符串。
-    return make_pipeline(
-        StandardScaler(),
-        MLPRegressor(hidden_layer_sizes=(10,), solver="lbfgs", max_iter=2000),
-    )
+    if model_type == "random_forest":
+        return RandomForestRegressor(n_estimators=100, random_state=42)
+    elif model_type == "gradient_boost":
+        return MultiOutputRegressor(
+            GradientBoostingRegressor(n_estimators=100, random_state=42)
+        )
+    elif model_type == "mlp":
+        return make_pipeline(
+            StandardScaler(),
+            MLPRegressor(hidden_layer_sizes=(64, 32), solver="lbfgs", max_iter=2000),
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type!r}. Choose random_forest, gradient_boost, or mlp.")
 
 
 class Trainer:
@@ -208,10 +221,11 @@ class Trainer:
     合并输入特征转换成预测输出并通过 OSC 发送出去。
     """
 
-    def __init__(self, osc_out_client, osc_out_address):
+    def __init__(self, osc_out_client, osc_out_address, model_type="random_forest"):
         self.examples_X = []  # 训练样本的输入部分：每个元素是一个 115 维特征向量。
-        self.examples_y = []  # 训练样本的输出部分：每个元素是一个 [out1, out2] 目标值。
-        self.model = build_model()  # 当前的（尚未训练的）模型。
+        self.examples_y = []  # 训练样本的输出部分：每个元素是一个包含 6 个目标值的列表。
+        self.model_type = model_type  # 当前使用的模型类型。
+        self.model = build_model(model_type)  # 当前的（尚未训练的）模型。
         self.trained = False  # 模型是否已经训练过。
         self.osc_out_client = osc_out_client  # 用来发送预测结果的 OSC 客户端。
         self.osc_out_address = osc_out_address  # 发送预测结果时使用的 OSC 地址。
@@ -230,7 +244,7 @@ class Trainer:
         if len(self.examples_X) < 2:
             print("Need at least 2 training examples before training (see 'record').")
             return
-        self.model = build_model()  # 每次训练都从头构建一个全新模型，避免受上一次训练结果影响。
+        self.model = build_model(self.model_type)  # 每次训练都从头构建一个全新模型，避免受上一次训练结果影响。
         self.model.fit(np.array(self.examples_X), np.array(self.examples_y))
         self.trained = True
         print(f"Trained on {len(self.examples_X)} examples ({N_INPUT_FEATURES}-dim input).")
@@ -263,7 +277,9 @@ class Trainer:
             if features is not None:
                 out = self.predict(features)
                 self.osc_out_client.send_message(self.osc_out_address, out.tolist())
-                print(f"\routput: {out[0]:8.3f}, {out[1]:8.3f}   ", end="", flush=True)
+                # 打印 6 个输出值：mouth, expression, head, body, arm, speed
+                vals = " ".join(f"{v:7.3f}" for v in out)
+                print(f"\routput: {vals}   ", end="", flush=True)
             time.sleep(SAMPLE_INTERVAL)
         print()  # move off the \r-overwritten line before the next prompt
         # 换行，避免下一次打印的命令提示符和上面用 \r 覆盖打印的那一行粘在一起。
@@ -305,9 +321,9 @@ def record_examples(receiver, target, seconds):
 
 HELP_TEXT = """\
 Commands:
-  record <out1> <out2> [seconds]   hold a state and capture it for `seconds`
-                                    (default 3), labeled with target output
-                                    (out1, out2)
+  record <out1>..<out6> [seconds]  hold a state and capture it for `seconds`
+                                    (default 3), labeled with target outputs
+                                    (mouth, expression, head, body, arm, speed)
   train                            fit the regressor on examples recorded so far
   run                              start live prediction + OSC output
   stop                             stop live prediction
@@ -340,6 +356,12 @@ def parse_args():
     parser.add_argument("--out-ip", default="127.0.0.1", help="where to send predicted outputs")
     parser.add_argument("--out-port", type=int, default=12000, help="OSC port for predicted outputs")
     parser.add_argument("--out-address", default="/stagedouble/outputs", help="OSC address for predicted outputs")
+    parser.add_argument(
+        "--model",
+        default="random_forest",
+        choices=["random_forest", "gradient_boost", "mlp"],
+        help="regression model type (default: random_forest)",
+    )
     return parser.parse_args()
 
 
@@ -380,8 +402,9 @@ def main():
 
     osc_out_client = SimpleUDPClient(args.out_ip, args.out_port)
     print(f"Sending outputs to {args.out_ip}:{args.out_port}{args.out_address}")
+    print(f"Model: {args.model}")
 
-    trainer = Trainer(osc_out_client, args.out_address)
+    trainer = Trainer(osc_out_client, args.out_address, args.model)
     print_help()
 
     # 主命令循环：不断读取用户在终端输入的一行命令并执行对应操作。
@@ -405,7 +428,7 @@ def main():
         elif cmd == "record":
             # record <out1> <out2> [seconds] —— 录制训练样本（音频+动作合并）。
             if len(rest) < N_OUTPUTS:
-                print("Usage: record <out1> <out2> [seconds]")
+                print("Usage: record <mouth> <expression> <head> <body> <arm> <speed> [seconds]")
                 continue
             try:
                 target = [float(rest[i]) for i in range(N_OUTPUTS)]
