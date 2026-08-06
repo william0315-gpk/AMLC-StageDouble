@@ -118,8 +118,8 @@ MODEL_URLS = {
     "full": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task",
     "heavy": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task",
 }
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-# 模型文件的本地缓存目录：models/
+MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+# 模型文件的本地缓存目录：项目根目录下的 models/
 
 
 def parse_args():
