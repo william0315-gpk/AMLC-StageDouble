@@ -25,14 +25,14 @@ with librosa, and streams the 16-value feature vector over OSC in real time.
 
 [EN] What this connects to:
 This is the first stage of the StageDouble pipeline. It sends its OSC
-feature vector to ml_trainer.py (or osc_listener.py for debugging), which
+feature vector to ml_trainer_v2.py (or osc_listener.py for debugging), which
 listens on the same host/port/address by default (127.0.0.1:6448
-/wek/inputs). Nothing needs to be running for this script itself to work —
+/wek/inputs). Nothing needs to be running for this script itself to work -
 it will happily send OSC packets into the void if no one is listening.
 
 [中] 这个文件如何与其他文件连接：
 这是 StageDouble 流水线的第一环。它把提取好的特征向量通过 OSC 发送给
-ml_trainer.py（用于训练/推理）或 osc_listener.py（用于调试查看数值）。
+ml_trainer_v2.py（用于训练/推理）或 osc_listener.py（用于调试查看数值）。
 两者默认都监听同一个地址（127.0.0.1:6448 /wek/inputs）。这个脚本本身
 不依赖下游程序是否在运行——即使没有人监听，它也会正常地把 OSC 数据包
 发送出去（只是没人收到而已）。
@@ -116,7 +116,7 @@ PITCH_FMAX = librosa.note_to_hz("C7")  # ~2093 Hz
 #
 # 这里沿用了 Wekinator 文档里的默认约定：监听 6448 端口，把所有输入值
 # 打包在同一条 OSC 消息里、按固定顺序排列。即便下游不是 Wekinator 本身
-# （比如 ml_trainer.py），这个约定仍然保留，方便任何监听同一地址的
+# （比如 ml_trainer_v2.py），这个约定仍然保留，方便任何监听同一地址的
 # 程序接收。
 DEFAULT_OSC_IP = "127.0.0.1"
 DEFAULT_OSC_PORT = 6448

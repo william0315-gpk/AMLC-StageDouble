@@ -26,7 +26,7 @@ Older BlazePose tutorials use `mediapipe.solutions.pose`, but that legacy
 favor of the "Tasks" API used below (`mediapipe.tasks.python.vision.
 PoseLandmarker`). The Tasks API needs an explicit pose-landmark model
 bundle (a `.task` file) rather than bundling one automatically; this script
-downloads the official Google-hosted model bundle to `model vol.1/models/`
+downloads the official Google-hosted model bundle to `models/`
 the first time it runs and reuses the cached copy after that.
 
 [中] 关于这里使用的 MediaPipe API 版本说明：
@@ -35,7 +35,7 @@ the first time it runs and reuses the cached copy after that.
 被下面用到的 "Tasks" API（`mediapipe.tasks.python.vision.PoseLandmarker`）
 取代。Tasks API 需要显式提供一个姿态关键点模型文件（`.task` 格式），
 不会像旧版那样自动内置模型。本脚本第一次运行时会自动把 Google 官方
-托管的模型文件下载到 `model vol.1/models/` 目录下，之后会直接复用这份
+托管的模型文件下载到 `models/` 目录下，之后会直接复用这份
 缓存，不会重复下载。
 
 [EN] How to run:
@@ -119,7 +119,7 @@ MODEL_URLS = {
     "heavy": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task",
 }
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-# 模型文件的本地缓存目录：model vol.1/models/
+# 模型文件的本地缓存目录：models/
 
 
 def parse_args():

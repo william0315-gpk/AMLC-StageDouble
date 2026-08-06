@@ -1,33 +1,0 @@
-Listening for audio features (16-dim) on 127.0.0.1:6448/wek/inputs
-Listening for motion features (99-dim) on 127.0.0.1:6449/stagedouble/motion
-Merged input vector size: 115 (= 16 audio + 99 motion)
-Sending outputs to 127.0.0.1:12000/stagedouble/outputs
-Commands:
-  record <out1> <out2> [seconds]   hold a state and capture it for `seconds`
-                                    (default 3), labeled with target output
-                                    (out1, out2)
-  train                            fit the regressor on examples recorded so far
-  run                              start live prediction + OSC output
-  stop                             stop live prediction
-  status                           show example count / training state
-  clear                            discard all recorded examples
-  help                             show this message
-  quit                             shut down
-> 0 examples recorded. Trained: False. Audio stream ready: True. Motion stream ready: True.
-> Recording target [1.0, 0.0] for 4.0s...
-Captured 39 examples.
-> Recording target [0.0, 1.0] for 4.0s...
-Captured 39 examples.
-> Recording target [0.9, 0.1] for 4.0s...
-Captured 39 examples.
-> Recording target [0.1, 0.9] for 4.0s...
-Captured 39 examples.
-> Recording target [0.5, 0.5] for 4.0s...
-Captured 39 examples.
-> Recording target [0.0, 0.0] for 4.0s...
-Captured 39 examples.
-> Trained on 234 examples (115-dim input).
-> Running. Outputs below; type 'stop' + Enter to stop.
-> output:    0.190,    0.071   output:    0.246,    0.092   output:    0.212,    0.184   output:    0.208,    0.184   output:    0.175,    0.153   output:    0.214,    0.152   output:    0.215,    0.190   output:    0.250,    0.182   output:    0.222,    0.196   output:    0.207,    0.182   output:    0.204,    0.178   output:    0.212,    0.188   output:    0.207,    0.182   output:    0.219,    0.194   output:    0.232,    0.205   output:    0.236,    0.208   output:    0.222,    0.197   output:    0.182,    0.207   output:    0.231,    0.142   output:    0.668,    0.064   output:    0.250,    0.079   output:    0.407,   -0.044   output:    0.744,   -0.382   output:    0.689,   -0.341   output:    0.722,   -0.359   output:    0.596,   -0.354   output:    0.465,   -0.139   output:    0.475,   -0.049   output:    0.535,   -0.034   output:    0.662,   -0.143   output:    0.830,   -0.013   output:    0.943,    0.043   output:    1.008,   -0.008   output:    1.265,   -0.264   output:    1.217,   -0.376   output:    1.056,   -0.403   output:    0.624,   -0.421   output:    0.619,   -0.531   output:    0.558,   -0.618   output:    0.558,   -0.618   output:    0.554,   -0.687   output:    0.699,   -0.762   output:    1.026,   -0.877   output:    0.796,   -0.701   output:    0.589,   -0.627   output:    0.777,   -0.727   output:    0.731,   -0.644   output:    0.690,   -0.691   output:    1.076,   -1.024   output:    0.768,   -0.921   output:    0.827,   -1.013   output:    0.466,   -0.768   output:    0.466,   -0.678   output:    0.321,   -0.353   output:    0.396,   -0.177   output:    0.099,    0.427   output:    0.200,    0.304   output:   -0.084,    0.648   output:    0.286,    0.152   output:    0.178,    0.258   output:    0.057,    0.417   output:    0.524,    0.198   output:    0.784,    0.014   output:    0.448,    0.457   output:    0.783,    0.209   output:    0.816,   -0.007   output:    0.716,    0.077   output:    0.589,    0.130   output:    0.485,    0.039   output:    0.614,   -0.191   output:    0.402,   -0.182   output:    0.442,   -0.192   output:    0.410,   -0.214   output:    0.338,   -0.161   output:    0.158,    0.119   output:    0.267,    0.114   output:    0.346,    0.155   output:    0.281,    0.361   output:    0.073,    0.448   output:    0.261,    0.345   output:    0.210,    0.442   output:   -0.016,    0.681   output:    0.104,    0.349   output:    0.164,    0.150   output:    0.191,    0.166   output:    0.294,    0.025   output:    0.331,   -0.038   
-Stopped.
-> 

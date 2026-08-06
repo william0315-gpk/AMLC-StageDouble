@@ -27,9 +27,9 @@ arm height, movement speed).
     地址 /stagedouble/motion
 在每一次 record（录制）/ train（训练）/ run（运行推理）之前，会把这
 两路数据合并成一个 115 维的输入向量（16 + 99 = 115）。除此之外，其余
-部分和 ml_trainer.py 完全一样：同样的"交互式机器学习"（IML）工作流程
-——示范带标签的样本、训练一个小型神经网络回归模型、实时运行它——同样
-的终端命令、同样输出 2 个数值。
+部分沿用了 ml_trainer.py 的设计思路：同样的"交互式机器学习"（IML）工作流程
+--示范带标签的样本、训练一个回归模型、实时运行它--同样
+的终端命令、同样输出 6 个数值。
 
 [EN] How to run (terminal commands available once running):
     python ml_trainer_v2.py
@@ -69,9 +69,9 @@ arm height, movement speed).
 [EN] What this connects to:
 Pipeline: audio_extractor.py --(OSC, 16 values, port 6448)--> \\
           motion_extractor.py --(OSC, 99 values, port 6449)--> \\
-          this script --(merge to 115 values -> predict 2 values)--> \\
+          this script --(merge to 115 values -> predict 6 values)--> \\
           OSC out (port 12000 /stagedouble/outputs) --> your digital human /
-          synth / whatever consumes the 2 output parameters.
+          synth / whatever consumes the 6 output parameters.
 Both audio_extractor.py and motion_extractor.py must be running and sending
 to this script's default listen addresses (127.0.0.1:6448 /wek/inputs and
 127.0.0.1:6449 /stagedouble/motion respectively) before `record` will
@@ -80,9 +80,9 @@ capture meaningful data.
 [中] 这个文件如何与其他文件连接：
 数据流向：audio_extractor.py --(OSC，16 个数值，端口 6448)--> \\
           motion_extractor.py --(OSC，99 个数值，端口 6449)--> \\
-          本脚本 --(合并成 115 维 -> 预测出 2 个数值)--> \\
+          本脚本 --(合并成 115 维 -> 预测出 6 个数值)--> \\
           OSC 输出（端口 12000 /stagedouble/outputs）--> 你的数字人 /
-          合成器 / 或任何消费这 2 个输出参数的下游程序。
+          合成器 / 或任何消费这 6 个输出参数的下游程序。
 必须先让 audio_extractor.py 和 motion_extractor.py 都运行起来，并且
 分别发送到本脚本默认监听的地址（127.0.0.1:6448 /wek/inputs 和
 127.0.0.1:6449 /stagedouble/motion），`record` 命令才能采集到有意义
@@ -250,8 +250,11 @@ class Trainer:
         print(f"Trained on {len(self.examples_X)} examples ({N_INPUT_FEATURES}-dim input).")
 
     def predict(self, features):
-        """[中] 用当前模型对一个 115 维特征向量做预测，返回 [out1, out2]。"""
-        return self.model.predict([features])[0]
+        """[中] 用当前模型对一个 115 维特征向量做预测，返回 6 个输出值。
+        输出值截断到 [0, 1] 范围内，防止下游渲染端收到异常值。
+        """
+        out = self.model.predict([features])[0]
+        return np.clip(out, 0.0, 1.0)
 
     def start_run(self, receiver):
         """[中] 启动后台"实时运行"线程：持续读取最新合并特征、预测、发送 OSC。"""
@@ -426,7 +429,7 @@ def main():
             break
 
         elif cmd == "record":
-            # record <out1> <out2> [seconds] —— 录制训练样本（音频+动作合并）。
+            # record <mouth>..<speed> [seconds] -- 录制训练样本（音频+动作合并）。
             if len(rest) < N_OUTPUTS:
                 print("Usage: record <mouth> <expression> <head> <body> <arm> <speed> [seconds]")
                 continue
