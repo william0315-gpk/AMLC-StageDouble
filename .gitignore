@@ -4,3 +4,6 @@ __pycache__/
 
 # Auto-downloaded MediaPipe pose model bundles (regenerated on first run of motion_extractor.py)
 models/
+
+# Large raw video files (folder structure kept via .gitkeep)
+data/**/*.mov

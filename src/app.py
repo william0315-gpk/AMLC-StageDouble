@@ -17,6 +17,7 @@ terminals beforehand.
 """
 
 import argparse
+import os
 import threading
 import time
 import math
@@ -38,6 +39,11 @@ from ml_trainer_v2 import (
     SAMPLE_INTERVAL,
 )
 
+from emotion_detector import EmotionDetector
+from style_matcher import StyleMatcher
+from motion_generator import MotionGenerator
+from style_extractor import build_style_library
+
 # 6 个参数的标签和颜色
 PARAMS = [
     ("嘴巴开合", "#FF6B6B"),
@@ -53,6 +59,11 @@ PANEL_COLOR = "#16213e"
 WIDGET_BG = "#0f3460"
 TEXT_COLOR = "#e0e0e0"
 ACCENT_COLOR = "#e94560"
+
+# 风格库默认路径 / default style library paths
+DEFAULT_VIDEOS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "videos")
+DEFAULT_STYLES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "styles")
+DEFAULT_STYLE_LIBRARY_PATH = os.path.join(DEFAULT_STYLES_DIR, "style_library.pkl")
 
 
 class CharacterCanvas:
@@ -203,6 +214,18 @@ class StageDoubleApp:
         self.output_lock = threading.Lock()
         self.recording = False
 
+        # --- 模式与风格库状态 / mode & style-library state ---
+        self.mode = "classic"  # "classic" 或 "style"
+        self.style_library = []
+        self.style_library_path = DEFAULT_STYLE_LIBRARY_PATH
+        self.emotion_detector = EmotionDetector()
+        self.style_matcher = StyleMatcher(self.style_library)
+        self.motion_generator = MotionGenerator(self.style_library)
+        self.current_emotion = [0.5, 0.5]
+        self.current_style_weights = []
+        self.dominant_style_name = "-"
+        self.style_building = False
+
         root.title("StageDouble 控制台")
         root.configure(bg=BG_COLOR)
         root.resizable(False, False)
@@ -212,7 +235,7 @@ class StageDoubleApp:
         self.osc_out_client = SimpleUDPClient(args.out_ip, args.out_port)
         self.trainer = Trainer(self.osc_out_client, args.out_address, args.model)
 
-        # 启动两路 OSC 监听
+        # 启动两路 OSC 监听（经典模式两路都要；风格模式只需要音频，但动作端口也监听不影响）
         start_osc_server(args.in_ip, args.audio_port, args.audio_address, self.receiver.audio.update)
         start_osc_server(args.in_ip, args.motion_port, args.motion_address, self.receiver.motion.update)
 
@@ -226,6 +249,9 @@ class StageDoubleApp:
         # --- 界面布局 ---
         self._build_ui()
 
+        # --- 尝试自动加载已有风格库 ---
+        self._try_load_style_library()
+
         # --- 定时刷新 ---
         self._update_ui()
 
@@ -238,22 +264,41 @@ class StageDoubleApp:
         )
         title.pack(pady=(10, 5))
 
+        # === 模式选择 / mode selector ===
+        mode_frame = tk.Frame(self.root, bg=BG_COLOR)
+        mode_frame.pack(fill="x", padx=15, pady=(0, 5))
+        tk.Label(mode_frame, text="工作模式：", font=("Microsoft YaHei", 10),
+                 fg=TEXT_COLOR, bg=BG_COLOR).pack(side="left", padx=(0, 8))
+        self.mode_var = tk.StringVar(value=self.mode)
+        tk.Radiobutton(mode_frame, text="经典 IML（手动示范）", variable=self.mode_var,
+                       value="classic", command=self._on_mode_change,
+                       font=("Microsoft YaHei", 10), fg=TEXT_COLOR, bg=BG_COLOR,
+                       selectcolor=WIDGET_BG, activebackground=BG_COLOR).pack(side="left", padx=5)
+        tk.Radiobutton(mode_frame, text="风格库（视频自动驱动）", variable=self.mode_var,
+                       value="style", command=self._on_mode_change,
+                       font=("Microsoft YaHei", 10), fg=TEXT_COLOR, bg=BG_COLOR,
+                       selectcolor=WIDGET_BG, activebackground=BG_COLOR).pack(side="left", padx=5)
+
         # 主体：左右两栏
         main_frame = tk.Frame(self.root, bg=BG_COLOR)
-        main_frame.pack(fill="x", padx=15, pady=5)
+        main_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
-        # === 左栏：录制参数 ===
-        left = tk.LabelFrame(main_frame, text="录制参数", font=("Microsoft YaHei", 11),
-                             fg=TEXT_COLOR, bg=PANEL_COLOR, bd=1, relief="solid")
-        left.pack(side="left", fill="y", padx=(0, 8))
+        # === 左栏容器 ===
+        self.left_container = tk.Frame(main_frame, bg=BG_COLOR)
+        self.left_container.pack(side="left", fill="y", padx=(0, 8))
+
+        # --- 经典模式面板 ---
+        self.classic_frame = tk.LabelFrame(self.left_container, text="录制参数", font=("Microsoft YaHei", 11),
+                                           fg=TEXT_COLOR, bg=PANEL_COLOR, bd=1, relief="solid")
+        self.classic_frame.pack(fill="y")
 
         self.sliders = []
         for i, (label, color) in enumerate(PARAMS):
-            tk.Label(left, text=label, font=("Microsoft YaHei", 10),
+            tk.Label(self.classic_frame, text=label, font=("Microsoft YaHei", 10),
                      fg=TEXT_COLOR, bg=PANEL_COLOR).grid(row=i, column=0, padx=8, pady=6, sticky="w")
 
             sv = tk.DoubleVar(value=0.3)
-            slider = tk.Scale(left, from_=0.0, to=1.0, resolution=0.05,
+            slider = tk.Scale(self.classic_frame, from_=0.0, to=1.0, resolution=0.05,
                               orient="horizontal", variable=sv,
                               length=150, bg=PANEL_COLOR, fg=TEXT_COLOR,
                               highlightthickness=0, troughcolor=WIDGET_BG,
@@ -262,15 +307,15 @@ class StageDoubleApp:
             self.sliders.append(sv)
 
         # 录制秒数
-        tk.Label(left, text="录制秒数", font=("Microsoft YaHei", 10),
+        tk.Label(self.classic_frame, text="录制秒数", font=("Microsoft YaHei", 10),
                  fg=TEXT_COLOR, bg=PANEL_COLOR).grid(row=6, column=0, padx=8, pady=6, sticky="w")
         self.seconds_var = tk.DoubleVar(value=3.0)
-        tk.Spinbox(left, from_=1, to=30, increment=1, textvariable=self.seconds_var,
+        tk.Spinbox(self.classic_frame, from_=1, to=30, increment=1, textvariable=self.seconds_var,
                    width=5, font=("Consolas", 11), bg=WIDGET_BG, fg=TEXT_COLOR).grid(
             row=6, column=1, padx=5, pady=6, sticky="w")
 
         # 按钮区
-        btn_frame = tk.Frame(left, bg=PANEL_COLOR)
+        btn_frame = tk.Frame(self.classic_frame, bg=PANEL_COLOR)
         btn_frame.grid(row=7, column=0, columnspan=2, pady=10)
 
         self.btn_record = tk.Button(btn_frame, text="录制", command=self._on_record,
@@ -283,15 +328,15 @@ class StageDoubleApp:
                                    bg=WIDGET_BG, fg="white", relief="flat")
         self.btn_train.grid(row=0, column=1, padx=3)
 
-        self.btn_run = tk.Button(btn_frame, text="运行", command=self._on_run,
-                                 font=("Microsoft YaHei", 11), width=6,
-                                 bg="#6BCB77", fg="white", relief="flat")
-        self.btn_run.grid(row=1, column=0, padx=3, pady=5)
+        self.btn_run_classic = tk.Button(btn_frame, text="运行", command=self._on_run,
+                                         font=("Microsoft YaHei", 11), width=6,
+                                         bg="#6BCB77", fg="white", relief="flat")
+        self.btn_run_classic.grid(row=1, column=0, padx=3, pady=5)
 
-        self.btn_stop = tk.Button(btn_frame, text="停止", command=self._on_stop,
-                                  font=("Microsoft YaHei", 11), width=6,
-                                  bg="#FF6B6B", fg="white", relief="flat")
-        self.btn_stop.grid(row=1, column=1, padx=3, pady=5)
+        self.btn_stop_classic = tk.Button(btn_frame, text="停止", command=self._on_stop,
+                                          font=("Microsoft YaHei", 11), width=6,
+                                          bg="#FF6B6B", fg="white", relief="flat")
+        self.btn_stop_classic.grid(row=1, column=1, padx=3, pady=5)
 
         self.btn_clear = tk.Button(btn_frame, text="清空", command=self._on_clear,
                                    font=("Microsoft YaHei", 11), width=6,
@@ -299,14 +344,86 @@ class StageDoubleApp:
         self.btn_clear.grid(row=2, column=0, columnspan=2, padx=3)
 
         # 模型选择
-        tk.Label(left, text="模型", font=("Microsoft YaHei", 10),
+        tk.Label(self.classic_frame, text="模型", font=("Microsoft YaHei", 10),
                  fg=TEXT_COLOR, bg=PANEL_COLOR).grid(row=8, column=0, padx=8, pady=4, sticky="w")
         self.model_var = tk.StringVar(value=self.args.model)
-        model_menu = ttk.Combobox(left, textvariable=self.model_var, width=12,
+        model_menu = ttk.Combobox(self.classic_frame, textvariable=self.model_var, width=12,
                                   values=["random_forest", "gradient_boost", "mlp"],
                                   state="readonly")
         model_menu.grid(row=8, column=1, padx=5, pady=4, sticky="w")
         model_menu.bind("<<ComboboxSelected>>", self._on_model_change)
+
+        # --- 风格库模式面板 ---
+        self.style_frame = tk.LabelFrame(self.left_container, text="风格库", font=("Microsoft YaHei", 11),
+                                         fg=TEXT_COLOR, bg=PANEL_COLOR, bd=1, relief="solid")
+        # 默认隐藏，等模式切换显示 / hidden by default
+
+        # 构建风格库按钮
+        self.btn_build_style = tk.Button(self.style_frame, text="构建风格库", command=self._on_build_style,
+                                         font=("Microsoft YaHei", 10), width=14,
+                                         bg=WIDGET_BG, fg="white", relief="flat")
+        self.btn_build_style.pack(pady=(8, 4), padx=8)
+
+        # 加载风格库按钮
+        self.btn_load_style = tk.Button(self.style_frame, text="加载风格库", command=self._on_load_style,
+                                        font=("Microsoft YaHei", 10), width=14,
+                                        bg=WIDGET_BG, fg="white", relief="flat")
+        self.btn_load_style.pack(pady=4, padx=8)
+
+        # 风格列表
+        self.style_listbox = tk.Listbox(self.style_frame, width=22, height=8,
+                                        font=("Microsoft YaHei", 9),
+                                        bg="#0f0f1e", fg=TEXT_COLOR,
+                                        selectbackground=ACCENT_COLOR)
+        self.style_listbox.pack(padx=8, pady=4)
+
+        # 情绪显示
+        emotion_frame = tk.LabelFrame(self.style_frame, text="情绪检测", font=("Microsoft YaHei", 10),
+                                      fg=TEXT_COLOR, bg=PANEL_COLOR, bd=1, relief="solid")
+        emotion_frame.pack(fill="x", padx=8, pady=6)
+
+        tk.Label(emotion_frame, text="arousal", font=("Microsoft YaHei", 9),
+                 fg=TEXT_COLOR, bg=PANEL_COLOR).grid(row=0, column=0, padx=4, pady=2, sticky="w")
+        self.arousal_bar_bg = tk.Frame(emotion_frame, bg="#2d2d44", width=120, height=12)
+        self.arousal_bar_bg.grid(row=0, column=1, padx=4, pady=2)
+        self.arousal_bar_bg.pack_propagate(False)
+        self.arousal_bar = tk.Frame(self.arousal_bar_bg, bg="#FFD93D", width=0, height=12)
+        self.arousal_bar.place(x=0, y=0)
+        self.lbl_arousal_val = tk.Label(emotion_frame, text="0.00", font=("Consolas", 9),
+                                        fg="#ffffff", bg=PANEL_COLOR, width=5)
+        self.lbl_arousal_val.grid(row=0, column=2, padx=2)
+
+        tk.Label(emotion_frame, text="valence", font=("Microsoft YaHei", 9),
+                 fg=TEXT_COLOR, bg=PANEL_COLOR).grid(row=1, column=0, padx=4, pady=2, sticky="w")
+        self.valence_bar_bg = tk.Frame(emotion_frame, bg="#2d2d44", width=120, height=12)
+        self.valence_bar_bg.grid(row=1, column=1, padx=4, pady=2)
+        self.valence_bar_bg.pack_propagate(False)
+        self.valence_bar = tk.Frame(self.valence_bar_bg, bg="#6BCB77", width=0, height=12)
+        self.valence_bar.place(x=0, y=0)
+        self.lbl_valence_val = tk.Label(emotion_frame, text="0.00", font=("Consolas", 9),
+                                        fg="#ffffff", bg=PANEL_COLOR, width=5)
+        self.lbl_valence_val.grid(row=1, column=2, padx=2)
+
+        # sigma 平滑度
+        tk.Label(emotion_frame, text="sigma", font=("Microsoft YaHei", 9),
+                 fg=TEXT_COLOR, bg=PANEL_COLOR).grid(row=2, column=0, padx=4, pady=2, sticky="w")
+        self.sigma_var = tk.DoubleVar(value=0.25)
+        tk.Scale(emotion_frame, from_=0.05, to=0.5, resolution=0.05, orient="horizontal",
+                 variable=self.sigma_var, length=120, bg=PANEL_COLOR, fg=TEXT_COLOR,
+                 highlightthickness=0, troughcolor=WIDGET_BG,
+                 command=lambda _: self._on_sigma_change()).grid(row=2, column=1, padx=4, pady=2)
+
+        # 风格模式运行/停止
+        style_btn_frame = tk.Frame(self.style_frame, bg=PANEL_COLOR)
+        style_btn_frame.pack(pady=8)
+        self.btn_run_style = tk.Button(style_btn_frame, text="运行", command=self._on_run,
+                                       font=("Microsoft YaHei", 11), width=6,
+                                       bg="#6BCB77", fg="white", relief="flat")
+        self.btn_run_style.grid(row=0, column=0, padx=3)
+        self.btn_stop_style = tk.Button(style_btn_frame, text="停止", command=self._on_stop,
+                                        font=("Microsoft YaHei", 11), width=6,
+                                        bg="#FF6B6B", fg="white", relief="flat")
+        self.btn_stop_style.grid(row=0, column=1, padx=3)
 
         # === 右栏：输出可视化 ===
         right = tk.Frame(main_frame, bg=BG_COLOR)
@@ -334,6 +451,14 @@ class StageDoubleApp:
                                fg="#ffffff", bg=PANEL_COLOR, width=6)
             val_lbl.grid(row=i, column=2, padx=4, pady=2, sticky="w")
             self.bar_values.append(val_lbl)
+
+        # 潜空间画布
+        latent_frame = tk.LabelFrame(right, text="潜空间地图", font=("Microsoft YaHei", 11),
+                                     fg=TEXT_COLOR, bg=PANEL_COLOR, bd=1, relief="solid")
+        latent_frame.pack(fill="x", pady=(0, 8))
+
+        self.latent_canvas = tk.Canvas(latent_frame, width=320, height=200, bg="#0f0f1e", highlightthickness=0)
+        self.latent_canvas.pack(padx=10, pady=10)
 
         # 2D 小人 Canvas
         char_frame = tk.LabelFrame(right, text="2D 预览", font=("Microsoft YaHei", 11),
@@ -364,9 +489,20 @@ class StageDoubleApp:
                                     fg="#666666", bg=PANEL_COLOR)
         self.lbl_trained.pack(side="left", padx=10)
 
+        self.lbl_style_status = tk.Label(self.status_frame, text="风格库: 0", font=("Microsoft YaHei", 10),
+                                         fg=TEXT_COLOR, bg=PANEL_COLOR)
+        self.lbl_style_status.pack(side="left", padx=10)
+
+        self.lbl_dominant_style = tk.Label(self.status_frame, text="主导: -", font=("Microsoft YaHei", 10),
+                                           fg=TEXT_COLOR, bg=PANEL_COLOR)
+        self.lbl_dominant_style.pack(side="left", padx=10)
+
         self.lbl_msg = tk.Label(self.status_frame, text="", font=("Microsoft YaHei", 9),
                                 fg=ACCENT_COLOR, bg=PANEL_COLOR)
         self.lbl_msg.pack(side="right", padx=10)
+
+        # 初始模式显示
+        self._apply_mode()
 
     def _on_output_received(self, address, *args):
         """[中] 收到 OSC 输出时更新内部状态。"""
@@ -375,7 +511,7 @@ class StageDoubleApp:
                 self.latest_output[i] = float(args[i])
 
     def _update_ui(self):
-        """[中] 每 50ms 刷新界面：状态栏、柱状图、2D 小人。"""
+        """[中] 每 50ms 刷新界面：状态栏、柱状图、2D 小人、潜空间、情绪条。"""
         # 状态栏
         status = self.receiver.status()
         self.lbl_audio.config(
@@ -388,6 +524,15 @@ class StageDoubleApp:
         self.lbl_trained.config(
             text="已训练" if self.trainer.trained else "未训练",
             fg="#6BCB77" if self.trainer.trained else "#666666")
+        self.lbl_style_status.config(text=f"风格库: {len(self.style_library)}")
+        self.lbl_dominant_style.config(text=f"主导: {self.dominant_style_name}")
+
+        # 情绪条（风格模式下显示当前情绪）
+        arousal, valence = self.current_emotion
+        self.arousal_bar.config(width=int(max(0.0, min(1.0, arousal)) * 120))
+        self.lbl_arousal_val.config(text=f"{arousal:.2f}")
+        self.valence_bar.config(width=int(max(0.0, min(1.0, valence)) * 120))
+        self.lbl_valence_val.config(text=f"{valence:.2f}")
 
         # 柱状图
         with self.output_lock:
@@ -396,6 +541,9 @@ class StageDoubleApp:
             val = max(0.0, min(1.0, val))
             self.bars[i].config(width=int(val * 200))
             self.bar_values[i].config(text=f"{val:.3f}")
+
+        # 潜空间地图
+        self._draw_latent_space(highlight_pos=self.current_emotion)
 
         # 2D 小人
         self.character.update_values(values)
@@ -408,6 +556,145 @@ class StageDoubleApp:
         self.lbl_msg.config(text=msg)
         if duration > 0:
             self.root.after(int(duration * 1000), lambda: self.lbl_msg.config(text=""))
+
+    # -----------------------------------------------------------------------
+    # Mode switching / 模式切换
+    # -----------------------------------------------------------------------
+    def _on_mode_change(self):
+        """[中] 用户切换工作模式时的回调。"""
+        new_mode = self.mode_var.get()
+        if new_mode == self.mode:
+            return
+        self.mode = new_mode
+        self._apply_mode()
+        self._set_msg(f"已切换到{'风格库' if self.mode == 'style' else '经典 IML'}模式")
+
+    def _apply_mode(self):
+        """[中] 根据当前模式显示/隐藏对应面板。"""
+        if self.mode == "classic":
+            self.classic_frame.pack(fill="y")
+            self.style_frame.pack_forget()
+        else:
+            self.classic_frame.pack_forget()
+            self.style_frame.pack(fill="y")
+
+    # -----------------------------------------------------------------------
+    # Style library / 风格库操作
+    # -----------------------------------------------------------------------
+    def _try_load_style_library(self):
+        """[中] 启动时尝试自动加载默认风格库。"""
+        if os.path.exists(self.style_library_path):
+            self._load_style_library(self.style_library_path)
+
+    def _load_style_library(self, path):
+        """[中] 从 pickle 文件加载风格库，并更新相关组件。"""
+        import pickle
+
+        try:
+            with open(path, "rb") as f:
+                self.style_library = pickle.load(f)
+        except Exception as exc:
+            self._set_msg(f"加载风格库失败: {exc}")
+            return
+
+        self.style_matcher = StyleMatcher(self.style_library)
+        self.motion_generator = MotionGenerator(self.style_library)
+        self.style_library_path = path
+        self._update_style_listbox()
+        self._draw_latent_space()
+        self._set_msg(f"已加载 {len(self.style_library)} 个风格")
+
+    def _update_style_listbox(self):
+        """[中] 刷新风格列表显示。"""
+        self.style_listbox.delete(0, tk.END)
+        for style in self.style_library:
+            name = style.get("name", "未命名")
+            pos = style.get("emotion_pos", [0.0, 0.0])
+            self.style_listbox.insert(tk.END, f"{name} ({pos[0]:.2f}, {pos[1]:.2f})")
+
+    def _on_build_style(self):
+        """[中] 构建风格库按钮：处理 data/videos/ 下的所有视频。"""
+        if self.style_building:
+            return
+        if not os.path.isdir(DEFAULT_VIDEOS_DIR):
+            self._set_msg(f"找不到视频目录: {DEFAULT_VIDEOS_DIR}")
+            return
+
+        self.style_building = True
+        self.btn_build_style.config(state="disabled", text="构建中...")
+
+        def do_build():
+            try:
+                os.makedirs(DEFAULT_STYLES_DIR, exist_ok=True)
+                build_style_library(DEFAULT_VIDEOS_DIR, self.style_library_path)
+                self.root.after(0, lambda: self._load_style_library(self.style_library_path))
+            except Exception as exc:
+                self.root.after(0, lambda: self._set_msg(f"构建失败: {exc}"))
+            finally:
+                self.style_building = False
+                self.root.after(0, lambda: self.btn_build_style.config(state="normal", text="构建风格库"))
+
+        threading.Thread(target=do_build, daemon=True).start()
+
+    def _on_load_style(self):
+        """[中] 加载风格库按钮：弹出文件选择框。"""
+        from tkinter import filedialog
+
+        path = filedialog.askopenfilename(
+            title="选择风格库文件",
+            filetypes=[("Pickle 文件", "*.pkl"), ("所有文件", "*.*")],
+            initialdir=DEFAULT_STYLES_DIR,
+        )
+        if path:
+            self._load_style_library(path)
+
+    def _on_sigma_change(self):
+        """[中] 调整 RBF sigma 平滑度。"""
+        self.style_matcher.set_sigma(self.sigma_var.get())
+
+    def _draw_latent_space(self, highlight_pos=None):
+        """[中] 在潜空间画布上绘制风格位置与当前情绪位置。"""
+        canvas = self.latent_canvas
+        canvas.delete("all")
+
+        w = int(canvas.cget("width"))
+        h = int(canvas.cget("height"))
+        padding = 20
+        plot_w = w - 2 * padding
+        plot_h = h - 2 * padding
+
+        # 背景网格
+        for i in range(5):
+            x = padding + plot_w * i / 4
+            y = padding + plot_h * i / 4
+            canvas.create_line(x, padding, x, h - padding, fill="#2d2d44", width=1)
+            canvas.create_line(padding, y, w - padding, y, fill="#2d2d44", width=1)
+
+        # 坐标轴标签
+        canvas.create_text(w - padding, h - padding + 10, text="arousal", fill="#888888", font=("Consolas", 8))
+        canvas.create_text(padding, padding - 10, text="valence", fill="#888888", font=("Consolas", 8))
+
+        def _to_canvas(pos):
+            x = padding + pos[0] * plot_w
+            y = h - padding - pos[1] * plot_h
+            return x, y
+
+        # 绘制风格点
+        colors = ["#FF6B6B", "#FFD93D", "#6BCB77", "#4D96FF", "#9D4EDD", "#FF9F45", "#e94560"]
+        for i, style in enumerate(self.style_library):
+            pos = style.get("emotion_pos", [0.5, 0.5])
+            x, y = _to_canvas(pos)
+            color = colors[i % len(colors)]
+            r = 5
+            canvas.create_oval(x - r, y - r, x + r, y + r, fill=color, outline="white", width=1)
+            canvas.create_text(x, y - r - 8, text=style.get("name", f"s{i}"), fill=color, font=("Microsoft YaHei", 8))
+
+        # 绘制当前情绪位置
+        if highlight_pos is not None:
+            x, y = _to_canvas(highlight_pos)
+            canvas.create_line(x - 8, y, x + 8, y, fill="#ffffff", width=2)
+            canvas.create_line(x, y - 8, x, y + 8, fill="#ffffff", width=2)
+            canvas.create_oval(x - 4, y - 4, x + 4, y + 4, outline="#ffffff", width=2)
 
     def _on_record(self):
         """[中] 录制按钮：用当前滑块值作为目标输出，采集指定秒数的样本。"""
@@ -455,7 +742,14 @@ class StageDoubleApp:
         threading.Thread(target=do_train, daemon=True).start()
 
     def _on_run(self):
-        """[中] 运行按钮：启动实时预测，同时启动输出回显线程。"""
+        """[中] 运行按钮：根据当前模式启动对应的实时预测循环。"""
+        if self.mode == "classic":
+            self._run_classic()
+        else:
+            self._run_style()
+
+    def _run_classic(self):
+        """[中] 经典 IML 模式的实时预测循环。"""
         if not self.trainer.trained:
             self._set_msg("请先训练")
             return
@@ -479,7 +773,56 @@ class StageDoubleApp:
         self.trainer._run_stop_event.clear()
         self.trainer._run_thread = threading.Thread(target=custom_run_loop, daemon=True)
         self.trainer._run_thread.start()
-        self._set_msg("实时预测已启动")
+        self._set_msg("经典模式实时预测已启动")
+
+    def _run_style(self):
+        """[中] 风格库模式的实时生成循环：音频 -> 情绪 -> 风格权重 -> 6 维输出。"""
+        if len(self.style_library) == 0:
+            self._set_msg("请先构建或加载风格库")
+            return
+
+        if self.trainer._run_thread and self.trainer._run_thread.is_alive():
+            self._set_msg("已经在运行了")
+            return
+
+        self.motion_generator.reset()
+        self.trainer._run_stop_event.clear()
+
+        def style_run_loop():
+            while not self.trainer._run_stop_event.is_set():
+                audio_features = self.receiver.audio.latest()
+                if audio_features is None:
+                    time.sleep(SAMPLE_INTERVAL)
+                    continue
+
+                # 音频 -> 情绪
+                emotion = self.emotion_detector.detect(audio_features)
+                self.current_emotion = emotion
+
+                # 情绪 -> 风格权重
+                weights = self.style_matcher.match(emotion)
+                self.current_style_weights = weights
+
+                # 找出主导风格
+                if weights:
+                    max_idx = int(np.argmax(weights))
+                    self.dominant_style_name = self.style_library[max_idx].get("name", "-")
+                else:
+                    self.dominant_style_name = "-"
+
+                # 风格权重 + 音频 -> 6 维输出
+                out = self.motion_generator.generate(weights, audio_features)
+                self.osc_out_client.send_message(self.args.out_address, out)
+
+                with self.output_lock:
+                    for i in range(6):
+                        self.latest_output[i] = float(out[i])
+
+                time.sleep(SAMPLE_INTERVAL)
+
+        self.trainer._run_thread = threading.Thread(target=style_run_loop, daemon=True)
+        self.trainer._run_thread.start()
+        self._set_msg("风格库模式实时生成已启动")
 
     def _on_stop(self):
         """[中] 停止按钮。"""
