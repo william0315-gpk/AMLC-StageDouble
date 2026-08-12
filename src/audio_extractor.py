@@ -81,8 +81,8 @@ CHANNELS = 1  # mono mic input
 # 检测和 OSC 发送的开销后，处理速度就会跟不上，导致队列积压。经过实测，
 # 100ms（也就是每秒发送 10 次）可以在实时场景下稳定运行且留有余量；如果
 # 在你的机器上仍然跟不上，下面的 QUEUE_BACKLOG_WARNING 会打印警告提醒你。
-HOP_DURATION = 0.1  # seconds -> 10 messages/sec
-# 每个处理周期的时长（秒），0.1 秒 = 每秒发送 10 条 OSC 消息。
+HOP_DURATION = 1  # seconds -> 1 messages/sec
+# 每个处理周期的时长（秒），1 秒 = 每秒发送 1 条 OSC 消息。
 HOP_SAMPLES = int(SAMPLE_RATE * HOP_DURATION)
 # 每个处理周期对应的采样点数量（由采样率 x 周期时长算出）。
 
@@ -121,11 +121,6 @@ PITCH_FMAX = librosa.note_to_hz("C7")  # ~2093 Hz
 DEFAULT_OSC_IP = "127.0.0.1"
 DEFAULT_OSC_PORT = 6448
 DEFAULT_OSC_ADDRESS = "/wek/inputs"
-
-# Warn if the processing loop starts falling behind the microphone.
-# 如果处理循环的速度跟不上麦克风采集的速度，就打印警告提示用户。
-QUEUE_BACKLOG_WARNING = 3
-
 
 def parse_args():
     """[EN] Parse command-line arguments.
@@ -268,18 +263,27 @@ def main():
                 # 从队列里取出下一段音频（如果队列为空则阻塞等待）。
                 hop_chunk = audio_queue.get()
 
-                if audio_queue.qsize() > QUEUE_BACKLOG_WARNING:
-                    # 队列里堆积的音频片段太多，说明处理速度跟不上
-                    # 采集速度，打印警告提示用户考虑调大 HOP_DURATION。
-                    print(
-                        f"Warning: feature extraction is falling behind "
-                        f"({audio_queue.qsize()} chunks queued). Consider a "
-                        f"larger HOP_DURATION.",
-                        file=sys.stderr,
-                    )
+                # Real-time catch-up: if chunks piled up while we were busy
+                # extracting features, drain the queue so we always process
+                # the freshest audio instead of falling further behind.
+                #
+                # 实时追赶：如果在提取特征期间积压了多个音频片段，就清空
+                # 队列只保留最新数据，避免延迟越积越多。积压的音频仍然会
+                # 被拼接进 beat_window，保证节奏检测不丢数据。
+                drained = []
+                while not audio_queue.empty():
+                    drained.append(audio_queue.get())
 
-                # 把新采集到的音频拼接进滚动缓冲区，并丢弃最旧的部分。
-                beat_window = np.concatenate([beat_window[len(hop_chunk):], hop_chunk])
+                if drained:
+                    all_new = np.concatenate([hop_chunk] + drained)
+                    if len(all_new) >= BEAT_WINDOW_SAMPLES:
+                        beat_window = all_new[-BEAT_WINDOW_SAMPLES:].copy()
+                    else:
+                        beat_window = np.concatenate([beat_window[len(all_new):], all_new])
+                    hop_chunk = drained[-1]
+                else:
+                    beat_window = np.concatenate([beat_window[len(hop_chunk):], hop_chunk])
+
                 analysis_window = beat_window[-ANALYSIS_WINDOW_SAMPLES:]
 
                 # 计算这一轮的特征向量，并通过 OSC 发送出去。

@@ -17,7 +17,9 @@ import subprocess
 import threading
 import time
 import tkinter as tk
+import numpy as np
 from tkinter import filedialog, messagebox
+
 
 # 项目根目录
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))

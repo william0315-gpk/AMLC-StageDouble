@@ -24,6 +24,8 @@ import math
 import tkinter as tk
 from tkinter import ttk
 
+import numpy as np
+
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import BlockingOSCUDPServer
 from pythonosc.udp_client import SimpleUDPClient

@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+.venv/
 
 # Auto-downloaded MediaPipe pose model bundles (regenerated on first run of motion_extractor.py)
 models/
